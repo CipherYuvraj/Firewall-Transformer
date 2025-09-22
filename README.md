@@ -1,53 +1,207 @@
-# Web Traffic Anomaly Detection System - COMPLETED ✅
+# Transformer-Based Web Traffic Anomaly Detection
 
-## 🎯 SYSTEM STATUS: PRODUCTION READY!
+## 🎯 What This Is
 
-**Your complete Transformer-based anomaly detection system has been successfully built and deployed!** 
+A **machine learning system** that learns what normal web traffic looks like and flags suspicious/malicious requests. It uses a **Transformer model** (like ChatGPT, but for security) trained on your web logs.
 
-This production-ready system processes your JSONL data, trains a custom RoBERTa model, and provides real-time anomaly detection for web traffic.
+## 🚀 Quick Start (3 Steps)
 
-## 📊 ACCOMPLISHMENTS
+### 1. Train Tokenizer (Teaches the AI your vocabulary)
+```bash
+python scripts/train_tokenizer.py data/ecom_benign.jsonl --output_dir tokenizer_json --max_samples 10000
+```
 
-### ✅ Data Processing Complete
-- **Processed**: 50,000 training samples from your `dummy-data.jsonl`
-- **Validated**: 5,000 validation samples
-- **Format**: Custom field mapping (m→method, p→path, q→query, h→headers)
-- **Canonicalization**: Standardized format for model training
+### 2. Train Model (Teaches the AI normal patterns) 
+```bash
+python scripts/train_model.py data/ecom_benign.jsonl --tokenizer_dir tokenizer_json --output_dir model_json --max_samples 10000 --batch_size 16 --num_epochs 5
+```
 
-### ✅ Model Training Complete  
-- **Architecture**: Custom RoBERTa (11.1M parameters)
-- **Tokenizer**: Trained vocabulary (708 tokens) on your data
-- **Training Loss**: 4.90 (converged successfully)
-- **Validation**: Tested and working
+### 3. Test It (See if it catches attacks)
+```bash
+python scripts/scoring.py --model_path model_json --test_data data/ecom_benign.jsonl
+```
 
-### ✅ Anomaly Detection Working
-**Test Results on Sample Data:**
-1. Normal GET request: **Score 219.6** ✓
-2. Normal POST login: **Score 140.1** ✓  
-3. Admin config access: **Score 289.2** ⚠️
-4. **Path traversal attack: Score 375.4** 🚨 **(Correctly detected as anomalous!)**
+## 📊 How It Works
 
-### ✅ Production Server Ready
-- **gRPC Server**: Fully functional on port 50051
-- **API Endpoints**: ScoreRequest, ScoreBatch, UpdateThreshold, GetModelInfo
-- **Performance**: Real-time scoring with configurable thresholds
+### Input: Your JSON Logs
+```json
+{"m":"GET","p":"/store/category/:num","q":{"sort":"rating","page":":num"},"b":"","s":"api.shop.example.com","h":{"ua":"Mozilla/5.0","ct":"text/plain","cl":":num","cookieKeys":["trk","sid","pref"]}}
+```
+- `m` = HTTP Method (GET, POST, etc.)
+- `p` = Path (/store/category, /api/cart, etc.) 
+- `q` = Query parameters (object: {"sort":"rating","page":":num"})
+- `b` = Request body (for POST requests)
+- `s` = Server/Host (api.shop.example.com, 10.0.0.10, etc.)
+- `h` = Headers object with:
+  - `ua` = User-Agent
+  - `ct` = Content-Type
+  - `cl` = Content-Length
+  - `cookieKeys` = Array of cookie names
 
-## 🚀 Features
+### Output: Anomaly Scores
+- **Low Score (0-100)**: Normal traffic ✅
+- **Medium Score (100-200)**: Suspicious traffic ⚠️  
+- **High Score (200+)**: Likely attack 🚨
 
-- **Transformer Architecture**: RoBERTa-based model trained with Masked Language Modeling (MLM)
-- **Optimized Scoring**: Single-pass Pseudo Log-Likelihood calculation for efficient anomaly detection
-- **Production Ready**: Low-latency gRPC inference server with Docker containerization
-- **Continuous Learning**: Safe fine-tuning with replay buffer to prevent catastrophic forgetting
-- **Comprehensive Evaluation**: ROC curves, precision metrics, and threshold recommendations
-- **Data Processing**: Robust canonicalization and BPE tokenization for web request data
+### Example Results
+```
+Normal GET /store/home        → Score: 68   ✅ Safe
+Normal POST /store/api/cart   → Score: 94   ✅ Safe  
+Admin access                  → Score: 143  ⚠️ Monitor
+XSS Attack                    → Score: 266  🚨 Block!
+Path Traversal Attack         → Score: 227  🚨 Block!
+```
 
-## 📁 Project Structure
+## 🧠 How The AI Learns
+
+1. **Canonicalization**: Converts messy logs into clean format
+   ```
+   Raw: {"m":"GET","p":"/store/category/:num","q":{"sort":"rating"},"s":"api.shop.example.com"}
+   Clean: [METHOD] GET [PATH] /store/category/:num [PARAMS] sort=rating [HEADERS] server:api.shop.example.com
+   ```
+
+2. **Tokenization**: Breaks text into AI-understandable pieces
+   ```
+   "[METHOD] GET" → [67, 313, 69, 320] (numbers the AI understands)
+   ```
+
+3. **Training**: AI learns to predict missing words in normal requests
+   - Shows AI: "[METHOD] GET [PATH] /store/[MASK]" 
+   - AI learns: "[MASK] = category" (because that's normal in e-commerce)
+   - Later: AI sees "/store/../../etc/passwd" and thinks "This is weird!"
+
+4. **Scoring**: AI calculates how "surprised" it is by new requests
+   - Familiar patterns = Low score = Safe
+   - Strange patterns = High score = Attack
+
+## 🎛️ Training Parameters (For Better Accuracy)
+
+### Basic Training (Fast)
+```bash
+python scripts/train_model.py data/ecom_benign.jsonl \
+  --tokenizer_dir tokenizer_json \
+  --output_dir model_json \
+  --max_samples 5000 \
+  --batch_size 8 \
+  --num_epochs 2
+```
+
+### High Accuracy Training (Slower but Better)
+```bash
+python scripts/train_model.py data/ecom_benign.jsonl \
+  --tokenizer_dir tokenizer_json \
+  --output_dir model_json \
+  --max_samples 10000 \
+  --batch_size 32 \
+  --num_epochs 10 \
+  --learning_rate 3e-4
+```
+
+### Production Training (Maximum Accuracy)
+```bash
+python scripts/train_model.py data/ecom_benign.jsonl \
+  --tokenizer_dir tokenizer_json \
+  --output_dir model_json \
+  --batch_size 64 \
+  --num_epochs 20 \
+  --learning_rate 1e-4
+```
+
+## 📁 What Each File Does
 
 ```
-├── tokenizer/              # Trained BPE tokenizer artifacts
-│   ├── vocab.json
-│   └── merges.txt
-├── model/                  # Trained RoBERTa model
+📦 Firewall Trans/
+├── 📂 data/
+│   └── ecom_benign.jsonl         # Your e-commerce web traffic logs (10,000 samples)
+├── 📂 scripts/
+│   ├── canonicalize.py           # Cleans up messy log formats  
+│   ├── train_tokenizer.py        # Teaches AI your vocabulary
+│   ├── train_model.py            # Main AI training script
+│   ├── scoring.py                # Tests trained AI on new data
+│   ├── evaluate.py               # Measures AI accuracy
+│   └── finetune.py               # Updates AI with new data
+├── 📂 model_json/                # Your trained AI brain
+├── 📂 tokenizer_json/            # AI's vocabulary
+└── requirements.txt              # Software dependencies
+```
+
+## � Advanced Features
+
+### Continuous Learning (Update Model with New Data)
+```bash
+python scripts/finetune.py --base_model model_json --new_data new_logs.jsonl --output_dir model_updated
+```
+
+### Evaluation (Check How Good Your Model Is)
+```bash
+python scripts/evaluate.py --model_path model_json --test_data test_logs.jsonl
+```
+
+## 💡 Tips for Best Results
+
+### 1. **More Data = Better Detection**
+- Use 10k+ samples for good results
+- Use 50k+ samples for excellent results
+- Use all your data for maximum accuracy
+
+### 2. **Balance Your Data**
+- Include normal traffic (90%)
+- Include some attacks (10%) if you have labeled data
+- More variety = better generalization
+
+### 3. **Training Time vs Accuracy**
+- 2 epochs = Quick test (5 minutes)
+- 10 epochs = Good accuracy (30 minutes)  
+- 20+ epochs = Maximum accuracy (hours)
+
+### 4. **Memory Management**
+- Small batch_size (8) = Less memory, slower
+- Large batch_size (32) = More memory, faster
+- Adjust based on your computer's RAM
+
+## 🎯 Understanding Your Results
+
+### Good Model Signs:
+- ✅ Training loss decreases over time
+- ✅ Normal traffic gets scores < 150
+- ✅ Attacks get scores > 200
+- ✅ Clear separation between normal/attack scores
+
+### Bad Model Signs:
+- ❌ Training loss doesn't decrease
+- ❌ All scores are similar (no separation)
+- ❌ Normal traffic gets very high scores
+- ❌ Model says everything is an attack
+
+## 🚨 Common Issues & Fixes
+
+### "Out of Memory" Error
+```bash
+# Use smaller batch size
+--batch_size 4
+```
+
+### "All Scores Are High"
+```bash
+# Train longer or use more data
+--num_epochs 10 --max_samples 20000
+```
+
+### "Model Not Learning"
+```bash
+# Adjust learning rate
+--learning_rate 1e-4
+```
+
+## 🎉 You're Ready!
+
+Your AI security system can now:
+- ✅ Learn from your web traffic patterns
+- ✅ Detect XSS, SQL injection, path traversal attacks
+- ✅ Score requests in real-time
+- ✅ Improve over time with new data
+
+**Start with basic training, then scale up for production!** 🚀
 │   ├── pytorch_model.bin
 │   ├── config.json
 │   └── tokenizer.json

@@ -148,7 +148,7 @@ def canonicalize_request(log_entry: Union[Dict[str, Any], str]) -> str:
         headers_str = ""
     
     # Process request body if present
-    body = log_entry.get('body', log_entry.get('request_body', ''))
+    body = log_entry.get('body', log_entry.get('request_body', log_entry.get('b', '')))
     if body:
         body = truncate_if_needed(str(body), 512)
         # Add body to headers section with special prefix
@@ -156,6 +156,16 @@ def canonicalize_request(log_entry: Union[Dict[str, Any], str]) -> str:
             headers_str += f"|body:{hash_sensitive_value(body, 'BODY_')}"
         else:
             headers_str = f"body:{hash_sensitive_value(body, 'BODY_')}"
+    
+    # Process server/host if present
+    server = log_entry.get('server', log_entry.get('host', log_entry.get('s', '')))
+    if server:
+        server = truncate_if_needed(str(server), 256)
+        # Add server to headers section
+        if headers_str:
+            headers_str += f"|server:{server}"
+        else:
+            headers_str = f"server:{server}"
     
     # Construct canonical format
     canonical = f"[METHOD] {method} [PATH] {path} [PARAMS] {params_str} [HEADERS] {headers_str}"
