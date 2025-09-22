@@ -1,7 +1,7 @@
 """
 Train a RoBERTa model for web traffic anomaly detection using Masked Language Modeling.
 
-This script trains a Transformer model on canonicalized web request logs to learn
+This script trains a Transformer model on JSON/JSONL web request logs to learn
 the patterns of benign traffic. The trained model can then be used for anomaly scoring.
 """
 import argparse
@@ -24,6 +24,11 @@ from transformers import (
 )
 from datasets import Dataset as HFDataset, load_dataset
 from tokenizers import ByteLevelBPETokenizer
+
+# Import canonicalization function
+import sys
+sys.path.append(os.path.dirname(__file__))
+from canonicalize import canonicalize_request
 
 
 # Configure logging
@@ -59,6 +64,92 @@ class WebTrafficDataset:
                 line = line.strip()
                 if line:  # Skip empty lines
                     texts.append(line)
+        return texts
+    
+    def tokenize_function(self, examples):
+        """Tokenize examples for the dataset."""
+        return self.tokenizer(
+            examples['text'],
+            truncation=True,
+            padding=False,  # Dynamic padding handled by data collator
+            max_length=self.max_length,
+            return_special_tokens_mask=True
+        )
+    
+    def get_dataset(self):
+        """Convert to HuggingFace Dataset format."""
+        # Create HuggingFace dataset
+        dataset = HFDataset.from_dict({'text': self.texts})
+        
+        # Tokenize
+        tokenized_dataset = dataset.map(
+            self.tokenize_function,
+            batched=True,
+            remove_columns=['text'],
+            desc="Tokenizing dataset"
+        )
+        
+        return tokenized_dataset
+
+
+class WebTrafficJSONDataset:
+    """Dataset class for loading and processing JSON/JSONL web traffic logs."""
+    
+    def __init__(self, file_path: str, tokenizer, max_length: int = 256, max_samples: int = None):
+        """
+        Initialize the dataset for JSON/JSONL input.
+        
+        Args:
+            file_path: Path to the JSON/JSONL file containing web request logs
+            tokenizer: Trained tokenizer instance
+            max_length: Maximum sequence length
+            max_samples: Maximum number of samples to load (None for all)
+        """
+        self.file_path = file_path
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.max_samples = max_samples
+        
+        # Load and canonicalize data
+        self.texts = self._load_and_canonicalize()
+        logger.info(f"Loaded and canonicalized {len(self.texts)} samples from {file_path}")
+    
+    def _load_and_canonicalize(self):
+        """Load JSON data and canonicalize on-the-fly."""
+        texts = []
+        processed_count = 0
+        error_count = 0
+        
+        with open(self.file_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                if self.max_samples and processed_count >= self.max_samples:
+                    break
+                    
+                line = line.strip()
+                if not line:
+                    continue
+                
+                try:
+                    # Parse JSON line
+                    log_entry = json.loads(line)
+                    
+                    # Canonicalize the log entry
+                    canonical_text = canonicalize_request(log_entry)
+                    
+                    if canonical_text.strip():  # Only add non-empty canonicalized text
+                        texts.append(canonical_text)
+                        processed_count += 1
+                        
+                        if processed_count % 10000 == 0:
+                            logger.info(f"  Processed {processed_count} entries...")
+                            
+                except (json.JSONDecodeError, KeyError, Exception) as e:
+                    error_count += 1
+                    if error_count <= 5:  # Show first 5 errors
+                        logger.warning(f"Error processing line {line_num}: {e}")
+                    continue
+        
+        logger.info(f"Canonicalization complete - Processed: {processed_count}, Errors: {error_count}")
         return texts
     
     def tokenize_function(self, examples):
@@ -176,27 +267,40 @@ def load_tokenizer(tokenizer_dir: str):
     return tokenizer
 
 
-def prepare_datasets(train_file: str, val_file: Optional[str], tokenizer, max_length: int = 256):
+def prepare_datasets(train_file: str, val_file: Optional[str], tokenizer, max_length: int = 256, max_samples: int = None):
     """
-    Prepare training and validation datasets.
+    Prepare training and validation datasets from text or JSON files.
     
     Args:
-        train_file: Path to training data file
+        train_file: Path to training data file (text or JSON/JSONL)
         val_file: Path to validation data file (optional)
         tokenizer: Tokenizer instance
         max_length: Maximum sequence length
+        max_samples: Maximum number of samples to load (None for all)
     
     Returns:
         Tuple of (train_dataset, val_dataset)
     """
-    # Load training dataset
-    train_dataset = WebTrafficDataset(train_file, tokenizer, max_length)
+    # Detect file type and load accordingly
+    if train_file.endswith(('.json', '.jsonl')):
+        logger.info("Detected JSON/JSONL training file")
+        train_dataset = WebTrafficJSONDataset(train_file, tokenizer, max_length, max_samples)
+    else:
+        logger.info("Detected text training file")
+        train_dataset = WebTrafficDataset(train_file, tokenizer, max_length)
+    
     train_hf_dataset = train_dataset.get_dataset()
     
     # Load validation dataset
     val_hf_dataset = None
     if val_file and os.path.exists(val_file):
-        val_dataset = WebTrafficDataset(val_file, tokenizer, max_length)
+        if val_file.endswith(('.json', '.jsonl')):
+            logger.info("Detected JSON/JSONL validation file")
+            val_dataset = WebTrafficJSONDataset(val_file, tokenizer, max_length, max_samples)
+        else:
+            logger.info("Detected text validation file")
+            val_dataset = WebTrafficDataset(val_file, tokenizer, max_length)
+        
         val_hf_dataset = val_dataset.get_dataset()
         logger.info(f"Loaded validation dataset with {len(val_hf_dataset)} samples")
     else:
@@ -222,7 +326,8 @@ def train_model(
     warmup_steps: int = 500,
     save_steps: int = 1000,
     eval_steps: int = 1000,
-    seed: int = 42
+    seed: int = 42,
+    max_samples: int = None
 ):
     """
     Train the RoBERTa model for masked language modeling.
@@ -262,7 +367,7 @@ def train_model(
     logger.info(f"Model created with {model.num_parameters():,} parameters")
     
     # Prepare datasets
-    train_dataset, val_dataset = prepare_datasets(train_file, val_file, tokenizer, max_length)
+    train_dataset, val_dataset = prepare_datasets(train_file, val_file, tokenizer, max_length, max_samples)
     
     # Data collator for MLM
     data_collator = DataCollatorForLanguageModeling(
@@ -348,7 +453,7 @@ def main():
     
     parser.add_argument(
         "train_file",
-        help="Path to training data file (canonicalized logs)"
+        help="Path to training data file (text or JSON/JSONL)"
     )
     
     parser.add_argument(
@@ -403,6 +508,12 @@ def main():
         help="Random seed"
     )
     
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        help="Maximum number of samples to use for training (default: all)"
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -415,7 +526,8 @@ def main():
             batch_size=args.batch_size,
             num_epochs=args.num_epochs,
             learning_rate=args.learning_rate,
-            seed=args.seed
+            seed=args.seed,
+            max_samples=args.max_samples
         )
         
     except Exception as e:
